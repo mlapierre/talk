@@ -19,6 +19,10 @@ if (JWT_SECRETS) {
   // Wrap a multi-secret around the available secrets.
   module.exports.jwt = new jwt.MultiSecret(
     JWT_SECRETS.map(secret => {
+      if (typeof secret.jwksUri === 'string') {
+        return new jwt.JWKSSecret(secret);
+      }
+
       if (!('kid' in secret)) {
         throw new Error(
           "when multiple keys are specified, kid's must be specified"

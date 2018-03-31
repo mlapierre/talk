@@ -1,5 +1,21 @@
 const jwt = require('jsonwebtoken');
 const { merge, uniq, omitBy, isUndefined } = require('lodash');
+const jwks = require('jwks-rsa');
+
+const getKID = token => {
+  let header = null;
+  try {
+    header = JSON.parse(Buffer(token.split('.')[0], 'base64').toString());
+  } catch (err) {
+    throw err;
+  }
+
+  if (!('kid' in header)) {
+    throw new Error('expected kid to exist in the token header, it did not.');
+  }
+
+  return header.kid;
+};
 
 /**
  * MultiSecret will take many secrets and provide a unified interface for
@@ -18,6 +34,35 @@ class MultiSecret {
     this.secrets = secrets;
   }
 
+  getSupportedAlgs() {
+    const algorithms = [];
+    if (this.secrets.some(({ jwks }) => jwks)) {
+      // TODO: investigate how to dynamically support different algorithm types.
+      algorithms.push('RS256');
+    }
+
+    return algorithms;
+  }
+
+  getSigningKey(token, done) {
+    const kid = getKID(token);
+
+    let verifier = this.secrets.find(secret => secret.kid === kid);
+    if (!verifier) {
+      // We now know that none of the secrets have the correct kid, check to see
+      // if there is a jwks secret.
+      verifier = this.secrets.find(({ jwks }) => jwks);
+      if (!verifier) {
+        return done(new Error(`expected kid ${kid} was not available.`));
+      }
+
+      // This is a jwks verifier! Let's defer to that function.
+      return verifier.getSigningKey(token, done);
+    }
+
+    return done(null, verifier.signingKey);
+  }
+
   /**
    * Sign will sign with the first secret.
    */
@@ -26,33 +71,6 @@ class MultiSecret {
       omitBy(payload, isUndefined),
       omitBy(options, isUndefined)
     );
-  }
-
-  /**
-   * Verify will parse the token and determine the kid, then match it to the
-   * available secrets, using that to perform the verification.
-   */
-  verify(token, options, callback) {
-    let header = null;
-    try {
-      header = JSON.parse(Buffer(token.split('.')[0], 'base64').toString());
-    } catch (err) {
-      return callback(err);
-    }
-
-    if (!('kid' in header)) {
-      return callback(
-        new Error('expected kid to exist in the token header, it did not.')
-      );
-    }
-
-    let kid = header.kid;
-    let verifier = this.secrets.find(secret => secret.kid === kid);
-    if (!verifier) {
-      return callback(new Error(`expected kid ${kid} was not available.`));
-    }
-
-    return verifier.verify(token, options, callback);
   }
 }
 
@@ -65,6 +83,14 @@ class Secret {
     this.signingKey = signingKey;
     this.verifiyingKey = verifiyingKey;
     this.algorithm = algorithm;
+  }
+
+  getSupportedAlgs() {
+    return [];
+  }
+
+  getSigningKey(token, done) {
+    return done(null, this.verifiyingKey);
   }
 
   /**
@@ -88,26 +114,6 @@ class Secret {
         }),
         isUndefined
       )
-    );
-  }
-
-  /**
-   * Verify will ensure that the given token was indeed signed with this secret.
-   * @param {String} token the token to verify
-   * @param {Object} options the verification options
-   * @param {Function} callback the function to call with the verification results
-   */
-  verify(token, options, callback) {
-    jwt.verify(
-      token,
-      this.verifiyingKey,
-      omitBy(
-        merge({}, options, {
-          algorithms: [this.algorithm],
-        }),
-        isUndefined
-      ),
-      callback
     );
   }
 }
@@ -150,8 +156,43 @@ function AsymmetricSecret(
   });
 }
 
+/**
+ * JWKSSecret is a secret source that permits verifying via a dynamic JWKS
+ * endpoint.
+ */
+function JWKSSecret({ jwksUri }) {
+  const client = jwks({
+    cache: true,
+    jwksUri,
+  });
+
+  return {
+    jwks: true,
+    getSigningKey(token, done) {
+      const kid = getKID(token);
+      client.getSigningKey(kid, (err, key) => {
+        if (err) {
+          return done(err);
+        }
+
+        // Get the public key from the jws key.
+        const publicKey = (key.publicKey || key.rsaPublicKey).replace(
+          /\\n/g,
+          '\n'
+        );
+
+        // Extract the public key from the available key.
+        const signingKey = Buffer.from(publicKey);
+
+        return done(null, signingKey);
+      });
+    },
+  };
+}
+
 module.exports = {
   AsymmetricSecret,
   SharedSecret,
+  JWKSSecret,
   MultiSecret,
 };

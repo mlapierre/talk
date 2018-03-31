@@ -32,7 +32,8 @@ const {
   JWT_USER_ID_CLAIM,
 } = require('../config');
 
-const { jwt } = require('../secrets');
+const jwt = require('jsonwebtoken');
+const { jwt: secret } = require('../secrets');
 
 // GenerateToken will sign a token to include all the authorization information
 // needed for the front end.
@@ -249,18 +250,8 @@ let cookieExtractor = req => {
   return null;
 };
 
-// Override the JwtVerifier method on the JwtStrategy so we can pack the
-// original token into the payload.
-JwtStrategy.JwtVerifier = (token, secretOrKey, options, callback) => {
-  return jwt.verify(token, options, (err, jwt) => {
-    if (err) {
-      return callback(err);
-    }
-
-    // Attach the original token onto the payload.
-    return callback(false, { token, jwt });
-  });
-};
+// Define the algorithms that we can support.
+const algorithms = [JWT_ALG].concat(secret.getSupportedAlgs());
 
 // Extract the JWT from the 'Authorization' header with the 'Bearer' scheme.
 passport.use(
@@ -275,7 +266,18 @@ passport.use(
 
       // Use the secret passed in which is loaded from the environment. This can be
       // a certificate (loaded) or a HMAC key.
-      secretOrKey: jwt,
+      secretOrKeyProvider: async (req, rawJwtToken, done) => {
+        secret.getSigningKey(rawJwtToken, (err, key) => {
+          if (err) {
+            return done(err);
+          }
+
+          // Attach the original token on the request object.
+          req.rawJwtToken = rawJwtToken;
+
+          return done(null, key);
+        });
+      },
 
       // Verify the issuer.
       issuer: JWT_ISSUER,
@@ -283,14 +285,17 @@ passport.use(
       // Verify the audience.
       audience: JWT_AUDIENCE,
 
-      // Enable only the HS256 algorithm.
-      algorithms: [JWT_ALG],
+      // Only allow the specified algorithms.
+      algorithms,
 
       // Pass the request object back to the callback so we can attach the JWT to
       // it.
       passReqToCallback: true,
     },
-    async (req, { token, jwt }, done) => {
+    async (req, jwt, done) => {
+      // Extracted the token from the raw jwt token.
+      const { rawJwtToken: token } = req;
+
       // Load the user from the environment, because we just got a user from the
       // header.
       try {
