@@ -192,6 +192,16 @@ jobs:
       # TODO: remove when more reliable
       E2E_MAX_RETRIES: 1
 
+  # test_tag_version will verify that the tag name matches the current version
+  # specified in the package.json file.
+  test_tag_version:
+    <<: *job_defaults
+    steps:
+      - checkout
+      - run:
+          name: Verify tag version
+          command: node ./.circleci/tagversion.js $CIRCLE_TAG
+
   # deploy will deploy the application as a docker image.
   deploy:
     <<: *job_defaults
@@ -254,6 +264,8 @@ workflows:
     jobs:
       - npm_dependencies:
           <<: *filter_deploy
+      - test_tag_version:
+          <<: *filter_deploy
       - lint:
           <<: *filter_deploy
           requires:
@@ -292,6 +304,7 @@ workflows:
           requires:
             - lint
             - test_unit
+            - test_tag_version
             - test_integration_chrome
             - test_integration_firefox
             - test_integration_edge
