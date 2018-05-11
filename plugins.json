@@ -1,9 +1,0 @@
-{
-    "server": [
-      "talk-plugin-google-auth"
-    ],
-    "client": [
-      "talk-plugin-google-auth"
-    ]
-  }
-  
